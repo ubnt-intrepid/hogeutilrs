@@ -36,12 +36,13 @@ fn main() {
     let Args { arg_name: name, arg_args: args, flag_parallel: parallel } = args;
 
     let targs: Vec<Handlebars> = args.into_iter()
-        .map(|arg| {
+        .map(|arg| -> Result<Handlebars, handlebars::TemplateError> {
             let mut handlebars = Handlebars::new();
-            handlebars.register_template_string("dummy", arg).ok().unwrap();
-            handlebars
+            handlebars.register_template_string("dummy", arg)?;
+            Ok(handlebars)
         })
-        .collect();
+        .try_collect()
+        .unwrap();
 
     let mut childs = Vec::new();
 
@@ -49,8 +50,9 @@ fn main() {
     for line in stdin.lock().lines() {
         let decoded: BTreeMap<String, String> = json::decode(&line.unwrap()).unwrap();
         let xargs: Vec<String> = targs.iter()
-            .map(|ref targ| targ.render("dummy", &decoded).ok().unwrap())
-            .collect();
+            .map(|ref targ| targ.render("dummy", &decoded))
+            .try_collect()
+            .unwrap();
 
         let mut child = Command::new(&name)
             .args(&xargs)
@@ -67,5 +69,28 @@ fn main() {
 
     for child in childs {
         child.join().unwrap();
+    }
+}
+
+
+trait TryCollect: Iterator {
+    type Unwrapped;
+    type Error;
+    fn try_collect(self) -> Result<Vec<Self::Unwrapped>, Self::Error>;
+}
+
+impl<I, T, E, F> TryCollect for std::iter::Map<I, F>
+    where I: Iterator,
+          F: FnMut(I::Item) -> Result<T, E>
+{
+    type Unwrapped = T;
+    type Error = E;
+
+    fn try_collect(self) -> Result<Vec<T>, E> {
+        let mut buf = Vec::new();
+        for elem in self {
+            buf.push(elem?);
+        }
+        Ok(buf)
     }
 }
