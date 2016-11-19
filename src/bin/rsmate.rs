@@ -73,7 +73,8 @@ fn main() {
   }
 
   // create a connection to Rmate server.
-  let mut stream = std::net::TcpStream::connect(format!("{}:{}", options.host, options.port).as_str()).unwrap();
+  let mut stream =
+    std::net::TcpStream::connect(format!("{}:{}", options.host, options.port).as_str()).unwrap();
 
   // send all of the content to the server.
   rmate::send_open(&mut stream, options.name.as_str()).unwrap();
