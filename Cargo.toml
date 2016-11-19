@@ -1,5 +1,5 @@
 [package]
-name = "jsonargs"
+name = "hogeutilrs"
 version = "0.1.0"
 authors = ["Yusuke Sasaki <yusuke.sasaki.nuem@gmail.com>"]
 
@@ -7,3 +7,5 @@ authors = ["Yusuke Sasaki <yusuke.sasaki.nuem@gmail.com>"]
 docopt = "^0.6.86"
 rustc-serialize = "^0.3.21"
 handlebars = "^0.22.0"
+memmap = "^0.5.0"
+nix = "^0.7.0"
