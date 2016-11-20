@@ -107,24 +107,24 @@ impl Cli {
       return Ok(());
     }
 
-    if !entry.is_dir() {
-      return Ok(());
-    }
-
     for entry in std::fs::read_dir(entry)? {
       let entry = entry?;
-      let tx = tx.clone();
-      let ignore = ignore.clone();
-      if is_async {
-        thread::spawn(move || {
-          let root = entry.path().to_owned();
+      if !entry.path().is_dir() {
+        if !is_match(&entry.path(), ignore.deref()) {
           tx.send(entry).unwrap();
-          Self::files_inner(&root, tx, ignore, is_async).unwrap();
-        });
+        }
+
       } else {
         let root = entry.path().to_owned();
+        let tx = tx.clone();
+        let ignore = ignore.clone();
         tx.send(entry).unwrap();
-        Self::files_inner(&root, tx, ignore, is_async)?;
+
+        if is_async {
+          thread::spawn(move || Self::files_inner(&root, tx, ignore, is_async).unwrap());
+        } else {
+          Self::files_inner(&root, tx, ignore, is_async)?;
+        }
       }
     }
 
