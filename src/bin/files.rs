@@ -3,14 +3,24 @@ extern crate regex;
 #[macro_use]
 extern crate hogeutilrs;
 
+use std::{env, fs, io, thread};
 use std::borrow::{Borrow, Cow};
-use std::env;
-use std::fs;
 use std::ops::Deref;
-use std::path::{Path, PathBuf};
+use std::path::{Path, PathBuf, StripPrefixError};
 use std::sync::{Arc, mpsc};
-use std::thread;
-use std::io;
+
+
+#[derive(Debug)]
+enum FilesError {
+  Regex(regex::Error),
+  IO(io::Error),
+  StripPrefix(StripPrefixError),
+  Other(String),
+}
+def_from! { FilesError, regex::Error     => Regex }
+def_from! { FilesError, io::Error        => IO }
+def_from! { FilesError, StripPrefixError => StripPrefix }
+def_from! { FilesError, String           => Other }
 
 
 #[derive(Debug)]
@@ -42,7 +52,7 @@ impl Cli {
       .arg(Arg::from_usage("-a --async 'search asynchronously'"))
   }
 
-  pub fn new() -> Result<Cli, regex::Error> {
+  pub fn new() -> Result<Cli, FilesError> {
     let matches = Self::build_cli().get_matches();
 
     let ignore: Cow<str> = matches.value_of("ignore")
@@ -67,20 +77,19 @@ impl Cli {
     })
   }
 
-  pub fn run(&mut self) -> io::Result<()> {
+  pub fn run(&mut self) -> Result<(), FilesError> {
     let root = env::current_dir()?;
     let rx = self.files(&root, self.is_async);
 
     for entry in rx {
       if let Some(ref m) = self.matchre {
-        if !m.is_match(entry.file_name().to_str().ok_or(io::Error::new(io::ErrorKind::Other, ""))?) {
+        if !m.is_match(entry.file_name().to_str().ok_or("".to_owned())?) {
           continue;
         }
       }
       println!("./{}",
                entry.path()
-                 .strip_prefix(&root)
-                 .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?
+                 .strip_prefix(&root)?
                  .display());
     }
 
@@ -102,7 +111,7 @@ impl Cli {
                  tx: mpsc::SyncSender<fs::DirEntry>,
                  ignore: Arc<Option<regex::Regex>>,
                  is_async: bool)
-                 -> io::Result<()> {
+                 -> Result<(), FilesError> {
     if is_match(&entry, ignore.deref()) {
       return Ok(());
     }
@@ -144,16 +153,8 @@ fn is_match(entry: &Path, pattern: &Option<regex::Regex>) -> bool {
   }
 }
 
-#[derive(Debug)]
-enum Error {
-  Regex(regex::Error),
-  IO(io::Error),
-}
-def_from! { Error, regex::Error => Regex }
-def_from! { Error, io::Error    => IO }
-
-fn _main() -> Result<(), Error> {
-  Cli::new()?.run().map_err(Into::into)
+fn _main() -> Result<(), FilesError> {
+  Ok(Cli::new()?.run()?)
 }
 
 fn main() {
