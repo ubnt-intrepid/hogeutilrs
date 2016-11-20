@@ -1,4 +1,3 @@
-extern crate chan;
 extern crate clap;
 extern crate walkdir;
 extern crate regex;
@@ -113,20 +112,16 @@ impl Cli {
   fn files_async<P: Into<PathBuf>>(&self, root: P) -> mpsc::Receiver<PathBuf> {
     let root = root.into();
     let ignore = self.ignore.clone();
-
     let (tx, rx) = mpsc::channel();
-    let wg = chan::WaitGroup::new();
-    wg.add(1);
+
     thread::spawn(move || {
-      Self::files_async_inner(root, wg.clone(), tx, ignore);
-      wg.done();
+      Self::files_async_inner(root, tx, ignore);
     });
 
     rx
   }
 
   fn files_async_inner(entry: PathBuf,
-                       wg: chan::WaitGroup,
                        tx: mpsc::Sender<PathBuf>,
                        ignore: Arc<Option<regex::Regex>>) {
     if is_match(&entry, ignore.deref()) {
@@ -137,14 +132,11 @@ impl Cli {
     if entry.is_dir() {
       for entry in std::fs::read_dir(entry).unwrap() {
         let entry = entry.unwrap().path().to_owned();
-        let wg = wg.clone();
         let tx = tx.clone();
         let ignore = ignore.clone();
 
-        wg.add(1);
         thread::spawn(move || {
-          Self::files_async_inner(entry, wg.clone(), tx, ignore);
-          wg.done();
+          Self::files_async_inner(entry, tx, ignore);
         });
       }
     }
