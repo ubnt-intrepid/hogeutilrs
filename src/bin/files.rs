@@ -28,10 +28,13 @@ struct Cli {
   matchre: Option<regex::Regex>,
   ignore: Arc<Option<regex::Regex>>,
   is_async: bool,
+  is_directory: bool,
+  is_absolute: bool,
+  max_items: usize,
 }
 
 impl Cli {
-  fn build_cli() -> clap::App<'static, 'static> {
+  fn build_app() -> clap::App<'static, 'static> {
     let program = env::args()
       .nth(0)
       .and_then(|s| {
@@ -44,16 +47,24 @@ impl Cli {
     use clap::{App, AppSettings, Arg};
     App::new(program)
       .about("find files")
-      .version("0.1.0")
-      .author("")
+      .version("0.0.1")
+      .author("Yusuke Sasaki <yusuke.sasaki.nuem@gmail.com>")
       .setting(AppSettings::VersionlessSubcommands)
-      .arg(Arg::from_usage("-i --ignore=[IGNORE] 'Ignored pattern'"))
-      .arg(Arg::from_usage("-m --matches=[IGNORE] 'pattern to match'"))
-      .arg(Arg::from_usage("-a --async 'search asynchronously'"))
+      .arg(Arg::from_usage("-i --ignore=[IGNORE]   'Ignored pattern'"))
+      .arg(Arg::from_usage("-m --matches=[MATCHES] 'Pattern to match'"))
+      .arg(Arg::from_usage("-a --absolute          'Show absolute path'"))
+      .arg(Arg::from_usage("-d --directory         'Show only directories'"))
+      .arg(Arg::from_usage("-A --async             'Search asynchronously'"))
+      .arg(Arg::from_usage("-M --max-items=[N]     'Limit of displayed items'"))
   }
 
   pub fn new() -> Result<Cli, FilesError> {
-    let matches = Self::build_cli().get_matches();
+    let matches = Self::build_app().get_matches();
+
+    let matchre = match matches.value_of("matches") {
+      Some(s) => Some(regex::Regex::new(s)?),
+      None => None,
+    };
 
     let ignore: Cow<str> = matches.value_of("ignore")
       .map(Into::into)
@@ -64,45 +75,51 @@ impl Cli {
     } else {
       None
     };
+    let ignore = Arc::new(ignore);
 
-    let matchre = match matches.value_of("matches") {
-      Some(s) => Some(regex::Regex::new(s)?),
-      None => None,
-    };
+    let max_items =
+      matches.value_of("max-items").and_then(|s| s.parse().ok()).unwrap_or(usize::max_value());
 
     Ok(Cli {
       matchre: matchre,
-      ignore: Arc::new(ignore),
+      ignore: ignore,
+      is_directory: matches.is_present("directory"),
+      is_absolute: matches.is_present("absolute"),
       is_async: matches.is_present("async"),
+      max_items: max_items,
     })
   }
 
   pub fn run(&mut self) -> Result<(), FilesError> {
     let root = env::current_dir()?;
-    let rx = self.files(&root, self.is_async);
 
-    for entry in rx {
-      if let Some(ref m) = self.matchre {
-        if !m.is_match(entry.file_name().to_str().ok_or("".to_owned())?) {
-          continue;
-        }
+    for entry in self.files(&root)
+      .into_iter()
+      .filter(|entry| !self.matchre.is_some() || is_match(&entry.path(), &self.matchre))
+      .take(self.max_items) {
+
+      if self.is_absolute {
+        println!("{}", entry.path().display());
+      } else {
+        println!("./{}",
+                 entry.path()
+                   .strip_prefix(&root)?
+                   .display());
       }
-      println!("./{}",
-               entry.path()
-                 .strip_prefix(&root)?
-                 .display());
     }
 
     Ok(())
   }
 
   // Scan all files/directories under given directory synchronously
-  fn files<P: Into<PathBuf>>(&self, root: P, is_async: bool) -> mpsc::Receiver<fs::DirEntry> {
+  fn files<P: Into<PathBuf>>(&self, root: P) -> mpsc::Receiver<fs::DirEntry> {
     let root = root.into();
     let ignore = self.ignore.clone();
+    let is_dir = self.is_directory;
+    let is_async = self.is_async;
 
     let (tx, rx) = mpsc::sync_channel(20);
-    thread::spawn(move || Self::files_inner(&root, tx, ignore, is_async));
+    thread::spawn(move || Self::files_inner(&root, tx, ignore, is_dir, is_async));
 
     rx
   }
@@ -110,6 +127,7 @@ impl Cli {
   fn files_inner(entry: &Path,
                  tx: mpsc::SyncSender<fs::DirEntry>,
                  ignore: Arc<Option<regex::Regex>>,
+                 is_dir: bool,
                  is_async: bool)
                  -> Result<(), FilesError> {
     if is_match(&entry, ignore.deref()) {
@@ -119,20 +137,23 @@ impl Cli {
     for entry in std::fs::read_dir(entry)? {
       let entry = entry?;
       if !entry.path().is_dir() {
-        if !is_match(&entry.path(), ignore.deref()) {
+        if !is_dir && !is_match(&entry.path(), ignore.deref()) {
           tx.send(entry).unwrap();
         }
 
       } else {
-        let root = entry.path().to_owned();
+        let path = entry.path().to_owned();
         let tx = tx.clone();
         let ignore = ignore.clone();
-        tx.send(entry).unwrap();
+
+        if is_dir {
+          tx.send(entry).unwrap();
+        }
 
         if is_async {
-          thread::spawn(move || Self::files_inner(&root, tx, ignore, is_async).unwrap());
+          thread::spawn(move || Self::files_inner(&path, tx, ignore, is_dir, is_async).unwrap());
         } else {
-          Self::files_inner(&root, tx, ignore, is_async)?;
+          Self::files_inner(&path, tx, ignore, is_dir, is_async)?;
         }
       }
     }
