@@ -10,6 +10,7 @@ use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, mpsc};
 use std::thread;
+use std::io;
 
 
 #[derive(Debug)]
@@ -66,17 +67,21 @@ impl Cli {
     })
   }
 
-  pub fn run(&mut self) -> Result<(), String> {
-    let root = env::current_dir().unwrap();
+  pub fn run(&mut self) -> io::Result<()> {
+    let root = env::current_dir()?;
     let rx = self.files(&root, self.is_async);
 
     for entry in rx {
       if let Some(ref m) = self.matchre {
-        if !m.is_match(entry.file_name().to_str().unwrap()) {
+        if !m.is_match(entry.file_name().to_str().ok_or(io::Error::new(io::ErrorKind::Other, ""))?) {
           continue;
         }
       }
-      println!("./{}", entry.path().strip_prefix(&root).unwrap().display());
+      println!("./{}",
+               entry.path()
+                 .strip_prefix(&root)
+                 .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?
+                 .display());
     }
 
     Ok(())
@@ -87,37 +92,43 @@ impl Cli {
     let root = root.into();
     let ignore = self.ignore.clone();
 
-    let (tx, rx) = mpsc::channel();
+    let (tx, rx) = mpsc::sync_channel(20);
     thread::spawn(move || Self::files_inner(&root, tx, ignore, is_async));
 
     rx
   }
 
   fn files_inner(entry: &Path,
-                 tx: mpsc::Sender<fs::DirEntry>,
+                 tx: mpsc::SyncSender<fs::DirEntry>,
                  ignore: Arc<Option<regex::Regex>>,
-                 is_async: bool) {
+                 is_async: bool)
+                 -> io::Result<()> {
     if is_match(&entry, ignore.deref()) {
-      return;
+      return Ok(());
     }
 
-    if entry.is_dir() {
-      for entry in std::fs::read_dir(entry).unwrap() {
-        let entry = entry.unwrap();
-        if is_async {
-          let tx = tx.clone();
-          let ignore = ignore.clone();
+    if !entry.is_dir() {
+      return Ok(());
+    }
 
-          thread::spawn(move || {
-            Self::files_inner(&entry.path(), tx.clone(), ignore, is_async);
-            tx.send(entry).unwrap();
-          });
-        } else {
-          Self::files_inner(&entry.path(), tx.clone(), ignore.clone(), is_async);
+    for entry in std::fs::read_dir(entry)? {
+      let entry = entry?;
+      let tx = tx.clone();
+      let ignore = ignore.clone();
+      if is_async {
+        thread::spawn(move || {
+          let root = entry.path().to_owned();
           tx.send(entry).unwrap();
-        }
+          Self::files_inner(&root, tx, ignore, is_async).unwrap();
+        });
+      } else {
+        let root = entry.path().to_owned();
+        tx.send(entry).unwrap();
+        Self::files_inner(&root, tx, ignore, is_async)?;
       }
     }
+
+    Ok(())
   }
 }
 
@@ -136,10 +147,10 @@ fn is_match(entry: &Path, pattern: &Option<regex::Regex>) -> bool {
 #[derive(Debug)]
 enum Error {
   Regex(regex::Error),
-  Other(String),
+  IO(io::Error),
 }
 def_from! { Error, regex::Error => Regex }
-def_from! { Error, String       => Other }
+def_from! { Error, io::Error    => IO }
 
 fn _main() -> Result<(), Error> {
   Cli::new()?.run().map_err(Into::into)
