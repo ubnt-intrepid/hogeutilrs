@@ -1,10 +1,12 @@
 extern crate rustc_serialize;
 extern crate docopt;
-extern crate nix;
 extern crate memmap;
+#[cfg(not(windows))]
+extern crate nix;
 
 use std::process::exit;
 use docopt::Docopt;
+#[cfg(not(windows))]
 use nix::unistd::{fork, ForkResult};
 
 const USAGE: &'static str = "
@@ -60,16 +62,24 @@ pub fn parse_options() -> Options {
   }
 }
 
+#[cfg(windows)]
+fn _fork() {}
+
+#[cfg(not(windows))]
+fn _fork() {
+  match fork() {
+    Ok(ForkResult::Parent { .. }) => exit(0),
+    Ok(ForkResult::Child) => (),
+    Err(_) => panic!("fork failed"),
+  }
+}
+
 fn main() {
   let options = parse_options();
   println!("{:?}", options);
 
   if !options.wait {
-    match fork() {
-      Ok(ForkResult::Parent { .. }) => exit(0),
-      Ok(ForkResult::Child) => (),
-      Err(_) => panic!("fork failed"),
-    }
+    _fork()
   }
 
   // create a connection to Rmate server.
