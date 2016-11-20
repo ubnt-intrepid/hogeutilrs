@@ -1,17 +1,15 @@
 extern crate clap;
-extern crate walkdir;
 extern crate regex;
-extern crate rustc_serialize;
 #[macro_use]
 extern crate hogeutilrs;
 
 use std::borrow::{Borrow, Cow};
 use std::env;
+use std::fs;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, mpsc};
 use std::thread;
-use walkdir::{WalkDir, WalkDirIterator};
 
 
 #[derive(Debug)]
@@ -70,74 +68,54 @@ impl Cli {
 
   pub fn run(&mut self) -> Result<(), String> {
     let root = env::current_dir().unwrap();
-
-    let rx = if self.is_async {
-      self.files_async(&root)
-    } else {
-      self.files_sync(&root)
-    };
+    let rx = self.files(&root, self.is_async);
 
     for entry in rx {
       if let Some(ref m) = self.matchre {
-        if !m.is_match(entry.file_name().unwrap().to_str().unwrap()) {
+        if !m.is_match(entry.file_name().to_str().unwrap()) {
           continue;
         }
       }
-      println!("./{}", entry.strip_prefix(&root).unwrap().display());
+      println!("./{}", entry.path().strip_prefix(&root).unwrap().display());
     }
 
     Ok(())
   }
 
   // Scan all files/directories under given directory synchronously
-  fn files_sync<P: Into<PathBuf>>(&self, root: P) -> mpsc::Receiver<PathBuf> {
+  fn files<P: Into<PathBuf>>(&self, root: P, is_async: bool) -> mpsc::Receiver<fs::DirEntry> {
     let root = root.into();
-
     let ignore = self.ignore.clone();
 
     let (tx, rx) = mpsc::channel();
-    thread::spawn(move || {
-      for entry in WalkDir::new(root)
-        .into_iter()
-        .filter_entry(|ref e| !is_match(e.path(), ignore.deref()))
-        .filter_map(|e| e.ok()) {
-        tx.send(entry.path().to_owned()).unwrap();
-      }
-    });
+    thread::spawn(move || Self::files_inner(&root, tx, ignore, is_async));
 
     rx
   }
 
-  // Scan all files/directories under given directory Asynchronously
-  fn files_async<P: Into<PathBuf>>(&self, root: P) -> mpsc::Receiver<PathBuf> {
-    let root = root.into();
-    let ignore = self.ignore.clone();
-    let (tx, rx) = mpsc::channel();
-
-    thread::spawn(move || {
-      Self::files_async_inner(root, tx, ignore);
-    });
-
-    rx
-  }
-
-  fn files_async_inner(entry: PathBuf,
-                       tx: mpsc::Sender<PathBuf>,
-                       ignore: Arc<Option<regex::Regex>>) {
+  fn files_inner(entry: &Path,
+                 tx: mpsc::Sender<fs::DirEntry>,
+                 ignore: Arc<Option<regex::Regex>>,
+                 is_async: bool) {
     if is_match(&entry, ignore.deref()) {
       return;
     }
 
-    tx.send(entry.to_owned()).unwrap();
     if entry.is_dir() {
       for entry in std::fs::read_dir(entry).unwrap() {
-        let entry = entry.unwrap().path().to_owned();
-        let tx = tx.clone();
-        let ignore = ignore.clone();
+        let entry = entry.unwrap();
+        if is_async {
+          let tx = tx.clone();
+          let ignore = ignore.clone();
 
-        thread::spawn(move || {
-          Self::files_async_inner(entry, tx, ignore);
-        });
+          thread::spawn(move || {
+            Self::files_inner(&entry.path(), tx.clone(), ignore, is_async);
+            tx.send(entry).unwrap();
+          });
+        } else {
+          Self::files_inner(&entry.path(), tx.clone(), ignore.clone(), is_async);
+          tx.send(entry).unwrap();
+        }
       }
     }
   }
