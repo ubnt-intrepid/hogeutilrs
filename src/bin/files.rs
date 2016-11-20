@@ -1,26 +1,31 @@
 extern crate clap;
+extern crate mioco;
 extern crate regex;
 #[macro_use]
 extern crate hogeutilrs;
 
-use std::{env, fs, io, thread};
+use std::{env, fs, io, path};
+use mioco::sync::mpsc;
+
 use std::borrow::{Borrow, Cow};
+use std::io::Write;
 use std::ops::Deref;
-use std::path::{Path, PathBuf, StripPrefixError};
-use std::sync::{Arc, mpsc};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 
 #[derive(Debug)]
 enum FilesError {
   Regex(regex::Error),
   IO(io::Error),
-  StripPrefix(StripPrefixError),
+  StripPrefix(path::StripPrefixError),
   Other(String),
 }
-def_from! { FilesError, regex::Error     => Regex }
-def_from! { FilesError, io::Error        => IO }
-def_from! { FilesError, StripPrefixError => StripPrefix }
-def_from! { FilesError, String           => Other }
+
+def_from! { FilesError, regex::Error           => Regex }
+def_from! { FilesError, io::Error              => IO }
+def_from! { FilesError, path::StripPrefixError => StripPrefix }
+def_from! { FilesError, String                 => Other }
 
 
 #[derive(Debug)]
@@ -81,16 +86,21 @@ impl Cli {
     let root = env::current_dir()?;
     let rx = self.files(&root, self.is_async);
 
-    for entry in rx {
-      if let Some(ref m) = self.matchre {
-        if !m.is_match(entry.file_name().to_str().ok_or("".to_owned())?) {
-          continue;
+    loop {
+      match rx.recv() {
+        Ok(entry) => {
+          if let Some(ref m) = self.matchre {
+            if !m.is_match(entry.file_name().to_str().ok_or("".to_owned())?) {
+              continue;
+            }
+          }
+          println!("./{}",
+                   entry.path()
+                     .strip_prefix(&root)?
+                     .display());
         }
+        Err(_) => break,
       }
-      println!("./{}",
-               entry.path()
-                 .strip_prefix(&root)?
-                 .display());
     }
 
     Ok(())
@@ -101,62 +111,63 @@ impl Cli {
     let root = root.into();
     let ignore = self.ignore.clone();
 
-    let (tx, rx) = mpsc::sync_channel(20);
-    thread::spawn(move || Self::files_inner(&root, tx, ignore, is_async));
+    let (tx, rx) = mpsc::sync_channel(40);
+    let _ = mioco::spawn(move || files_inner(&root, tx, ignore, is_async));
 
     rx
   }
+}
 
-  fn files_inner(entry: &Path,
-                 tx: mpsc::SyncSender<fs::DirEntry>,
-                 ignore: Arc<Option<regex::Regex>>,
-                 is_async: bool)
-                 -> Result<(), FilesError> {
-    if is_match(&entry, ignore.deref()) {
-      return Ok(());
-    }
+fn files_inner(entry: &Path,
+               tx: mpsc::SyncSender<fs::DirEntry>,
+               ignore: Arc<Option<regex::Regex>>,
+               is_async: bool)
+               -> Result<(), FilesError> {
+  if is_match(&entry, ignore.deref()) {
+    return Ok(());
+  }
 
-    for entry in std::fs::read_dir(entry)? {
-      let entry = entry?;
-      if !entry.path().is_dir() {
-        if !is_match(&entry.path(), ignore.deref()) {
-          tx.send(entry).unwrap();
-        }
+  for entry in std::fs::read_dir(entry)? {
+    let entry = entry?;
+    if !entry.path().is_dir() {
+      if !is_match(&entry.path(), ignore.deref()) {
+        let _ = tx.send(entry);
+      }
 
+    } else {
+      let tx = tx.clone();
+      let ignore = ignore.clone();
+
+      if is_async {
+        let _ = mioco::spawn(move || files_inner(&entry.path(), tx, ignore, is_async));
       } else {
-        let root = entry.path().to_owned();
-        let tx = tx.clone();
-        let ignore = ignore.clone();
-        tx.send(entry).unwrap();
-
-        if is_async {
-          thread::spawn(move || Self::files_inner(&root, tx, ignore, is_async).unwrap());
-        } else {
-          Self::files_inner(&root, tx, ignore, is_async)?;
-        }
+        files_inner(&entry.path(), tx, ignore, is_async)?;
       }
     }
-
-    Ok(())
   }
+
+  Ok(())
 }
 
 fn is_match(entry: &Path, pattern: &Option<regex::Regex>) -> bool {
   match *pattern {
     Some(ref pattern) => {
-      let filename = entry.file_name()
-        .unwrap()
-        .to_string_lossy();
-      pattern.is_match(filename.borrow())
+      if let Some(filename) = entry.file_name() {
+        let filename = filename.to_string_lossy();
+        pattern.is_match(filename.borrow())
+      } else {
+        false
+      }
     }
     None => false,
   }
 }
 
-fn _main() -> Result<(), FilesError> {
-  Ok(Cli::new()?.run()?)
-}
-
 fn main() {
-  _main().unwrap_or_else(|e| panic!("error: {:?}", e));
+  mioco::start(|| -> Result<(), FilesError> {
+      writeln!(&mut std::io::stderr(), "thread_num={}", mioco::thread_num())?;
+      Ok(Cli::new()?.run()?)
+    })
+    .unwrap()
+    .unwrap_or_else(|e| panic!("error: {:?}", e));
 }
