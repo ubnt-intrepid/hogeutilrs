@@ -1,7 +1,5 @@
 extern crate clap;
 extern crate regex;
-#[macro_use]
-extern crate hogeutilrs;
 
 use std::{env, fs, io, thread};
 use std::borrow::{Borrow, Cow};
@@ -9,6 +7,16 @@ use std::ops::Deref;
 use std::path::{Path, PathBuf, StripPrefixError};
 use std::sync::{Arc, mpsc};
 
+#[macro_export]
+macro_rules! def_from {
+  ($t:ident, $src:ty => $dst:ident) => {
+    impl From<$src> for $t {
+      fn from(err: $src) -> $t {
+        $t::$dst(err)
+      }
+    }
+  }
+}
 
 #[derive(Debug)]
 enum FilesError {

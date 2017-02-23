@@ -1,14 +1,27 @@
 [package]
-name = "hogeutilrs"
+name = "rust-miscs"
+description = "miscellaneous cli utilities written in Rust"
 version = "0.1.0"
 authors = ["Yusuke Sasaki <yusuke.sasaki.nuem@gmail.com>"]
 
+[[bin]]
+name = "files"
+path = "src/files.rs"
+
+[[bin]]
+name = "jsonargs"
+path = "src/jsonargs.rs"
+
+[[bin]]
+name = "rsmate"
+path = "src/rsmate.rs"
+
 [dependencies]
-docopt = "^0.6.86"
-rustc-serialize = "^0.3.21"
-handlebars = "^0.22.0"
-memmap = "^0.5.0"
-nix = "^0.7.0"
+clap = "*"
+docopt = "*"
+rustc-serialize = "*"
+handlebars = "*"
+memmap = "*"
+nix = "*"
 walkdir = "*"
 regex = "*"
-clap = "*"
